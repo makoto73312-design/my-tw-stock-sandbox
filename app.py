@@ -5,7 +5,7 @@ import numpy as np
 import plotly.graph_objects as go
 
 # --- 1. 網頁核心外觀配置 ---
-st.set_page_config(page_title="台股量化感知沙盒", page_icon="🇹🇼", layout="wide")
+st.set_page_config(page_title="台股雷達", page_icon="🇹🇼", layout="wide")
 st.title("🇹🇼 台股量化投資沙盒 (雲端試算表連動版)")
 st.markdown("已實裝 **華爾街 Regime-Switching 引擎** 與 **Google Sheet 遠端遙控清單**")
 
