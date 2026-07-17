@@ -6,8 +6,8 @@ import plotly.graph_objects as go
 
 # --- 1. 網頁核心外觀配置 ---
 st.set_page_config(page_title="台股雷達", page_icon="🇹🇼", layout="wide")
-st.title("🇹🇼 台股量化投資沙盒 (雲端試算表連動版)")
-st.markdown("已實裝 **華爾街 Regime-Switching 引擎** 與 **Google Sheet 遠端遙控清單**")
+st.title("🇹🇼 台股量化投資沙盒 V05.2 (動態倉位追蹤版)")
+st.markdown("已實裝 **華爾街 Regime-Switching 引擎**、**Google Sheet 遠端遙控** 與 🌟**V05.2 動態部位追蹤、真實進場成本與未實現損益監控**")
 
 # --- 2. 側邊欄控制台 (🌟 整合 Google Sheet 台股連動機制) ---
 st.sidebar.header("⚙️ 台股自動掃描設定")
@@ -94,7 +94,7 @@ def draw_progress_bar(score, active_char):
 def calculate_indicators(df):
     high_low_diff = (df['High'] - df['Low']).replace(0, 0.001) 
     mf_multiplier = ((df['Close'] - df['Low']) - (df['High'] - df['Close'])) / high_low_diff
-    df['主力籌碼'] = (df['Volume'] * mf_multiplier / 1000000).round(2)
+    df['主力籌碼'] = (df['Volume'] * mf_multiplier / 1000).round(2) # 台股籌碼單位調整
     
     df['MA5'] = df['Close'].rolling(5).mean()
     df['MA10'] = df['Close'].rolling(10).mean()
@@ -137,11 +137,12 @@ def calculate_indicators(df):
     df['MACD_Shrink'] = macd_shrink
     return df
 
-# --- 5. 台股優化回測引擎 ---
+# --- 5. 🌟 V05.2 台股倉位與進場成本追蹤回測引擎 ---
 def run_backtest_engine(df, strategy_name, days, posture):
     valid_df = df.dropna(subset=['200MA', 'ROC14', 'MACD_Hist', 'RSI_14', 'Vol_MA20']).tail(days).copy()
     if len(valid_df) < 5:
-        return "⚠️ 數據不足", 0, 0, 0, 0, "❌ 不推薦", "🛑 觀望/無訊號", 0.04, [], [], [], valid_df
+        # V05.2 修正回傳數量：14個參數
+        return "⚠️ 數據不足", 0, 0, 0, 0, "❌ 不推薦", "🛑 數據不足", "-", "-", "-", [], [], [], valid_df
     
     if "🚀 大膽進攻型" in posture:
         rsi_max, vol_mult, dip_pct, rsi_min, chip_col = 75, 1.05, -0.07, 35, '主力籌碼_Q80'
@@ -225,6 +226,7 @@ def run_backtest_engine(df, strategy_name, days, posture):
                 trade_logs.append({"交易日期": date_str, "動作狀態": "🔴 賣出出場 (SELL)", "執行價格": f"NT${exit_price:.2f}", "單筆報酬": f"{trade_return*100:+.2f}%"})
                 plot_sells.append((valid_df.index[i], exit_price))
 
+    # --- 🌟 V05.2 核心：狀態追蹤與輸出 ---
     final_win_rate = win_trades / total_trades if total_trades > 0 else 0.0
     profit_factor = total_gross_profit / total_gross_loss if total_gross_loss > 0 else (99.9 if total_gross_profit > 0 else 0.0)
     pf_str = "無限" if profit_factor == 99.9 else f"{profit_factor:.2f}"
@@ -235,14 +237,40 @@ def run_backtest_engine(df, strategy_name, days, posture):
         elif total_return >= 0.12 or final_win_rate >= 0.48: stars = "⭐⭐⭐⭐"
         else: stars = "⭐⭐"
 
-    latest_buy_signal = "🛑 觀望/無訊號"
-    latest = valid_df.iloc[-1]
-    if "A:" in strategy_name and (latest['MACD_Shrink'] >= 1 or (m_hists[-1] > m_hists[-2] and m_hists[-1] > 0)) and latest['ROC14'] > 0 and latest['RSI_14'] < rsi_max: latest_buy_signal = "🚀 大膽建倉 (BUY)"
-    elif ("B:" in strategy_name or "C:" in strategy_name) and (not is_entangled_arr[-1]) and closes[-1] > s_mas[-1] and vols[-1] > vol_m20s[-1] * vol_mult: latest_buy_signal = "🚀 大膽建倉 (BUY)"
-    elif "D:" in strategy_name and m200s[-1] > 0 and (closes[-1] - m200s[-1])/m200s[-1] <= dip_pct and latest['MACD_Shrink'] >= 1 and latest['RSI_14'] < rsi_min: latest_buy_signal = "🚀 大膽建倉 (BUY)"
-    elif "E:" in strategy_name and m_flows[-1] > chip_threshs[-1] and m_flows[-1] > 0: latest_buy_signal = "🚀 大膽建倉 (BUY)"
+    last_action = trade_logs[-1] if len(trade_logs) > 0 else None
+    today_str = valid_df.index[-1].strftime('%Y-%m-%d')
+    current_close = closes[-1]
+    
+    current_status = "💵 空手觀望 (CASH)"
+    entry_price_str = "-"  # 🟢 建議進場價 / 真實持股成本
+    sl_price_str = "-"
+    pnl_str = "-"
 
-    return "📡 運算完畢", total_return, final_win_rate, total_trades, pf_str, stars, latest_buy_signal, stop_loss_pct, trade_logs, plot_buys, plot_sells, valid_df
+    if has_position:
+        # 如果最後一筆交易是今天買入
+        if last_action and last_action["交易日期"] == today_str and "BUY" in last_action["動作狀態"]:
+            current_status = "🚀 今日大膽建倉 (BUY)"
+            unrealized_pnl = 0.0
+            entry_price_str = f"NT${current_close:.2f}"
+        else:
+            current_status = "📦 獲利續抱中 (HOLD)"
+            unrealized_pnl = (current_close - entry_price) / entry_price
+            pnl_str = f"{unrealized_pnl*100:+.2f}%"
+            entry_price_str = f"NT${entry_price:.2f}"  # 🌟 續抱中直接顯示當初真實買入成本！
+
+        if "D:" not in strategy_name: 
+            sl_price_str = f"NT${highest_price_since_entry * (1 - stop_loss_pct):.2f}"
+        else: 
+            sl_price_str = f"NT${max(entry_price * 0.95, m200s[-1]):.2f}"
+    else:
+        # 如果最後一筆交易是今天賣出
+        if last_action and last_action["交易日期"] == today_str and "SELL" in last_action["動作狀態"]:
+            current_status = "🔴 今日觸發防守賣出 (SELL)"
+        else:
+            current_status = "💵 空手觀望 (CASH)"
+
+    # 🟢 回傳 14 個參數對齊 V05.2
+    return "📡 運算完畢", total_return, final_win_rate, total_trades, pf_str, stars, current_status, entry_price_str, sl_price_str, pnl_str, trade_logs, plot_buys, plot_sells, valid_df
 
 # --- 6. Session State 記憶庫 ---
 if "calculated" not in st.session_state:
@@ -266,14 +294,18 @@ with tab_summary:
                 if df_stock.empty: continue
                 df_stock.columns = [col[0] if isinstance(col, tuple) else col for col in df_stock.columns]
                 df_stock = calculate_indicators(df_stock)
-                current_close = float(df_stock['Close'].iloc[-1])
+                
+                # 🟢 【V05.1 安全防護補丁】：先剃除沒有收盤價的空白列，避免盤中或盤前空值報錯
+                df_temp_clean = df_stock.dropna(subset=['Close'])
+                current_close = float(df_temp_clean['Close'].iloc[-1]) if not df_temp_clean.empty else 0.0
                 
                 raw_name = raw_list[idx]
                 comp_name = fetch_company_name(raw_name, ticker)
                 
                 for strat in strategies:
-                    radar, ret, win, trades, pf, stars, buy_signal, sl_pct, t_logs, p_buys, p_sells, v_df = run_backtest_engine(df_stock, strat, backtest_days, market_posture)
-                    suggested_sl, suggested_tp = current_close * (1 - sl_pct), current_close * (1 + sl_pct * 2)
+                    # 🟢 V05.2 解構變數
+                    radar, ret, win, trades, pf, stars, cur_status, entry_price_val, sl_price, pnl, t_logs, p_buys, p_sells, v_df = run_backtest_engine(df_stock, strat, backtest_days, market_posture)
+                    
                     st.session_state.detail_db[(raw_name, strat)] = {"logs": pd.DataFrame(t_logs), "buys": p_buys, "sells": p_sells, "v_df": v_df}
                     
                     master_report.append({
@@ -281,16 +313,19 @@ with tab_summary:
                         "公司名稱": comp_name, 
                         "當前股價": f"NT${current_close:.2f}", 
                         "策略手法": strat,
-                        "今日決策": buy_signal,
-                        "建議進場價": f"NT${current_close:.2f}" if "BUY" in buy_signal else "⏳ 觀望",
-                        "嚴格停損價": f"NT${suggested_sl:.2f}" if "BUY" in buy_signal else "⏳ 觀望",
-                        "預計停利價": f"NT${suggested_tp:.2f}" if "BUY" in buy_signal else "⏳ 觀望",
-                        "總報酬率": f"{ret * 100:+.2f}%", "歷史勝率": f"{win * 100:.1f}%",
-                        "交易次數": trades, "獲利因子": pf, "推薦指數": stars
+                        "倉位狀態": cur_status,
+                        "建議進場價 (或持股成本)": entry_price_val, # 🟢 真實成本/進場點追蹤
+                        "未實現損益": pnl, # 🟢 帳面盈虧
+                        "嚴格防守/停損價": sl_price, # 🟢 浮動停損保護
+                        "總報酬率": f"{ret * 100:+.2f}%", 
+                        "歷史勝率": f"{win * 100:.1f}%",
+                        "交易次數": trades, 
+                        "獲利因子": pf, 
+                        "推薦指數": stars
                     })
             st.session_state.final_df = pd.DataFrame(master_report)
             st.session_state.calculated, st.session_state.last_posture = True, market_posture
-            st.success(f"📊 台股大腦運算完成！")
+            st.success(f"📊 台股大腦倉位狀態與防守精算完成！")
             
     if st.session_state.calculated:
         def apply_block_shading(df):
