@@ -3,19 +3,24 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
+import requests  # 🟢 V05.2 表單寫入元件
 
 # --- 1. 網頁核心外觀配置 ---
 st.set_page_config(page_title="台股雷達", page_icon="🇹🇼", layout="wide")
-st.title("🇹🇼 台股量化投資沙盒 V05.2 (動態倉位追蹤版)")
-st.markdown("已實裝 **華爾街 Regime-Switching 引擎**、**Google Sheet 遠端遙控** 與 🌟**V05.2 動態部位追蹤、真實進場成本與未實現損益監控**")
+st.title("🇹🇼 台股量化投資沙盒 V05.2 (雲端自選股寫入版)")
+st.markdown("已實裝 **華爾街 Regime-Switching 引擎**、**Google Sheet 雲端雙向同步** 與 🌟**V05.2 動態部位追蹤**")
 
 # --- 2. 側邊欄控制台 (🌟 整合 Google Sheet 台股連動機制) ---
 st.sidebar.header("⚙️ 台股自動掃描設定")
 
-# 🚨🚨🚨 請將你的【台股 Google 試算表】共用連結貼在下方的引號裡面 🚨🚨🚨
 GSHEET_URL = "https://docs.google.com/spreadsheets/d/1Gmy2iLCICdI5UtdfLW5o4brX3l-J3-ZfwSUSBrz4bfo/edit?usp=sharing"
 
-@st.cache_data(ttl=60) # 快取 60 秒，手機改完試算表，1分鐘後網頁會自動同步
+# 🚨🚨🚨 請將你在【第二步】抓到的 Google 表單神奇密碼填入下方 🚨🚨🚨
+GOOGLE_FORM_ID = "1FAIpQLSfFyZVyj0gvInJomErH1shWrIClFF1CEjWKXtQJYkzxSgRcEg"  # 👈 替換成你的表單 ID
+ENTRY_TICKER_ID = "entry.40654407"        # 👈 替換成股票代號的 entry ID
+ENTRY_NAME_ID = "entry.1671985547"          # 👈 替換成中文名稱的 entry ID
+
+@st.cache_data(ttl=60)
 def get_tickers_from_sheet(url):
     try:
         if "docs.google.com" not in url:
@@ -23,24 +28,22 @@ def get_tickers_from_sheet(url):
         csv_url = url.split("/edit")[0] + "/export?format=csv"
         df = pd.read_csv(csv_url, header=None)
         tickers = df.iloc[:, 0].dropna().astype(str).str.strip().str.upper().tolist()
-        valid_tickers = [t for t in tickers if len(t) > 0]
+        valid_tickers = [t for t in tickers if len(t) > 0 and t != "股票代號"]
         if not valid_tickers:
             return "2330, 2317, 2454, 2603, 3231"
         return ", ".join(valid_tickers)
     except Exception as e:
         return "2330, 2317, 2454, 2603, 3231"
 
-# 遠端抓取台股自選名單
 default_tickers = get_tickers_from_sheet(GSHEET_URL)
 
 tickers_input = st.sidebar.text_area(
-    "📡 當前雲端同步清單 (新增台股請至試算表修改)", 
+    "📡 當前雲端同步清單", 
     default_tickers, 
     height=120,
     help="系統每 60 秒會自動去你的 Google 試算表抓取最新名單。"
 )
 
-# 自動代號轉換過濾器
 processed_tickers = []
 raw_list = [t.strip().upper() for t in tickers_input.split(',') if t.strip()]
 for t in raw_list:
@@ -57,18 +60,16 @@ market_posture = st.sidebar.selectbox(
     index=0
 )
 
-# ✅ 將字典內建於函數中，並將快取縮短為 1 小時 (3600秒)，確保新增名稱能快速生效
 @st.cache_data(ttl=3600)
 def fetch_company_name(raw_id, processed_id):
-    # 內建台股核心通稱字典 (新增股票請在這裡加)
     TW_NAMES_DICT = {
-        "2330": "台積電", "2317": "鴻海", "2454": "聯發科", "2603": "長榮", "3231": "緯創",
+        "2330": "台積電", "2317": "鴻海", "2454": "聯发科", "2603": "長榮", "3231": "緯創",
         "2308": "台達電", "2382": "廣達", "2881": "富邦金", "2882": "國泰金", "2303": "聯電",
         "2412": "中華電", "1301": "台塑", "1303": "南亞", "2002": "中鋼", "2891": "中信金",
         "2357": "華碩", "2324": "仁寶", "2344": "華邦電", "2337": "旺宏", "2609": "陽明",
         "2615": "萬海", "2610": "華航", "2618": "長榮航", "3037": "欣興", "3034": "聯詠",
         "2379": "瑞昱", "2353": "宏碁", "2886": "兆豐金", "5880": "合庫金", "2884": "玉山金",
-        "3481": "群創", "6695": "芯鼎", "8112": "至上", "4739": "康普" # 👈 已修正康普代號
+        "3481": "群創", "6695": "芯鼎", "8112": "至上", "4739": "康普"
     }
     
     if raw_id in TW_NAMES_DICT:
@@ -76,28 +77,16 @@ def fetch_company_name(raw_id, processed_id):
     try:
         ticker_obj = yf.Ticker(processed_id)
         short_name = ticker_obj.info.get('shortName', raw_id)
-        # 自動過濾掉英文公司名稱後綴，讓畫面乾淨一點
         for keyword in ["TAIWAN", "STOCK", "LTD", "INC", "CORPORATION", "COMPANY"]:
             short_name = short_name.upper().split(keyword)[0].strip()
         return short_name
     except:
         return "台灣個股"
 
-# --- 3. 輔助功能：動能雷達進度條 ---
-def draw_progress_bar(score, active_char):
-    filled_count = int(round(score / 10))
-    filled_count = max(0, min(10, filled_count))
-    empty_count = 10 - filled_count
-    if filled_count == 0 and score > 0: 
-        filled_count = 1
-        empty_count = 9
-    return f"[{active_char * filled_count}{'░' * empty_count}]"
-
-# --- 4. 技術指標核心計算大腦 ---
 def calculate_indicators(df):
     high_low_diff = (df['High'] - df['Low']).replace(0, 0.001) 
     mf_multiplier = ((df['Close'] - df['Low']) - (df['High'] - df['Close'])) / high_low_diff
-    df['主力籌碼'] = (df['Volume'] * mf_multiplier / 1000).round(2) # 台股籌碼單位調整
+    df['主力籌碼'] = (df['Volume'] * mf_multiplier / 1000).round(2)
     
     df['MA5'] = df['Close'].rolling(5).mean()
     df['MA10'] = df['Close'].rolling(10).mean()
@@ -119,7 +108,6 @@ def calculate_indicators(df):
     df['RSI_14'] = 100 - (100 / (1 + rs))
     
     df['Vol_MA20'] = df['Volume'].rolling(20).mean()
-    
     df['主力籌碼_Q80'] = df['主力籌碼'].rolling(50).quantile(0.8)
     df['主力籌碼_Q90'] = df['主力籌碼'].rolling(50).quantile(0.9)
     df['主力籌碼_Q95'] = df['主力籌碼'].rolling(50).quantile(0.95)
@@ -140,11 +128,9 @@ def calculate_indicators(df):
     df['MACD_Shrink'] = macd_shrink
     return df
 
-# --- 5. 🌟 V05.2 台股倉位與進場成本追蹤回測引擎 ---
 def run_backtest_engine(df, strategy_name, days, posture):
     valid_df = df.dropna(subset=['200MA', 'ROC14', 'MACD_Hist', 'RSI_14', 'Vol_MA20']).tail(days).copy()
     if len(valid_df) < 5:
-        # V05.2 修正回傳數量：14個參數
         return "⚠️ 數據不足", 0, 0, 0, 0, "❌ 不推薦", "🛑 數據不足", "-", "-", "-", [], [], [], valid_df
     
     if "🚀 大膽進攻型" in posture:
@@ -154,16 +140,11 @@ def run_backtest_engine(df, strategy_name, days, posture):
     else: 
         rsi_max, vol_mult, dip_pct, rsi_min, chip_col = 70, 1.15, -0.07, 30, '主力籌碼_Q90'
 
-    if "A:" in strategy_name:
-        s_ma, d_ma, stop_loss_pct = valid_df['MA5'], valid_df['MA14'], 0.04  
-    elif "B:" in strategy_name:
-        s_ma, d_ma, stop_loss_pct = valid_df['MA14'], valid_df['MA21'], 0.05  
-    elif "C:" in strategy_name:
-        s_ma, d_ma, stop_loss_pct = valid_df['MA10'], valid_df['MA30'], 0.07  
-    elif "D:" in strategy_name:
-        s_ma, d_ma, stop_loss_pct = valid_df['MA20'], valid_df['200MA'], 0.04
-    else: 
-        s_ma, d_ma, stop_loss_pct = valid_df['MA5'], valid_df['MA20'], 0.04
+    if "A:" in strategy_name: s_ma, d_ma, stop_loss_pct = valid_df['MA5'], valid_df['MA14'], 0.04  
+    elif "B:" in strategy_name: s_ma, d_ma, stop_loss_pct = valid_df['MA14'], valid_df['MA21'], 0.05  
+    elif "C:" in strategy_name: s_ma, d_ma, stop_loss_pct = valid_df['MA10'], valid_df['MA30'], 0.07  
+    elif "D:" in strategy_name: s_ma, d_ma, stop_loss_pct = valid_df['MA20'], valid_df['200MA'], 0.04
+    else: s_ma, d_ma, stop_loss_pct = valid_df['MA5'], valid_df['MA20'], 0.04
 
     max_ma = valid_df[['MA5', 'MA14', '50MA']].max(axis=1)
     min_ma = valid_df[['MA5', 'MA14', '50MA']].min(axis=1)
@@ -179,7 +160,6 @@ def run_backtest_engine(df, strategy_name, days, posture):
     entry_price, highest_price_since_entry = 0, 0
     total_trades, win_trades = 0, 0
     total_return, total_gross_profit, total_gross_loss = 0.0, 0.0, 0.0
-
     trade_logs, plot_buys, plot_sells = [], [], []
 
     for i in range(len(valid_df)):
@@ -229,7 +209,6 @@ def run_backtest_engine(df, strategy_name, days, posture):
                 trade_logs.append({"交易日期": date_str, "動作狀態": "🔴 賣出出場 (SELL)", "執行價格": f"NT${exit_price:.2f}", "單筆報酬": f"{trade_return*100:+.2f}%"})
                 plot_sells.append((valid_df.index[i], exit_price))
 
-    # --- 🌟 V05.2 核心：狀態追蹤與輸出 ---
     final_win_rate = win_trades / total_trades if total_trades > 0 else 0.0
     profit_factor = total_gross_profit / total_gross_loss if total_gross_loss > 0 else (99.9 if total_gross_profit > 0 else 0.0)
     pf_str = "無限" if profit_factor == 99.9 else f"{profit_factor:.2f}"
@@ -245,12 +224,11 @@ def run_backtest_engine(df, strategy_name, days, posture):
     current_close = closes[-1]
     
     current_status = "💵 空手觀望 (CASH)"
-    entry_price_str = "-"  # 🟢 建議進場價 / 真實持股成本
+    entry_price_str = "-"
     sl_price_str = "-"
     pnl_str = "-"
 
     if has_position:
-        # 如果最後一筆交易是今天買入
         if last_action and last_action["交易日期"] == today_str and "BUY" in last_action["動作狀態"]:
             current_status = "🚀 今日大膽建倉 (BUY)"
             unrealized_pnl = 0.0
@@ -259,20 +237,15 @@ def run_backtest_engine(df, strategy_name, days, posture):
             current_status = "📦 獲利續抱中 (HOLD)"
             unrealized_pnl = (current_close - entry_price) / entry_price
             pnl_str = f"{unrealized_pnl*100:+.2f}%"
-            entry_price_str = f"NT${entry_price:.2f}"  # 🌟 續抱中直接顯示當初真實買入成本！
+            entry_price_str = f"NT${entry_price:.2f}"
 
-        if "D:" not in strategy_name: 
-            sl_price_str = f"NT${highest_price_since_entry * (1 - stop_loss_pct):.2f}"
-        else: 
-            sl_price_str = f"NT${max(entry_price * 0.95, m200s[-1]):.2f}"
+        sl_price_str = f"NT${highest_price_since_entry * (1 - stop_loss_pct):.2f}" if "D:" not in strategy_name else f"NT${max(entry_price * 0.95, m200s[-1]):.2f}"
     else:
-        # 如果最後一筆交易是今天賣出
         if last_action and last_action["交易日期"] == today_str and "SELL" in last_action["動作狀態"]:
             current_status = "🔴 今日觸發防守賣出 (SELL)"
         else:
             current_status = "💵 空手觀望 (CASH)"
 
-    # 🟢 回傳 14 個參數對齊 V05.2
     return "📡 運算完畢", total_return, final_win_rate, total_trades, pf_str, stars, current_status, entry_price_str, sl_price_str, pnl_str, trade_logs, plot_buys, plot_sells, valid_df
 
 # --- 6. Session State 記憶庫 ---
@@ -285,8 +258,8 @@ if "calculated" not in st.session_state:
 if st.session_state.calculated and st.session_state.last_posture != market_posture:
     st.session_state.calculated = False
 
-# --- 7. 網頁分頁系統 ---
-tab_summary, tab_debug = st.tabs(["📊 台股綜合決策矩陣", "🔍 深度數據與視覺化對照面板"])
+# --- 7. 🌟 網頁三分頁系統 ---
+tab_summary, tab_manage, tab_debug = st.tabs(["📊 台股綜合決策矩陣", "➕ 自選清單線上管理", "🔍 深度數據與視覺化面板"])
 
 with tab_summary:
     if st.button("🚀 啟動全自動台股核心回測引擎", use_container_width=True):
@@ -298,7 +271,6 @@ with tab_summary:
                 df_stock.columns = [col[0] if isinstance(col, tuple) else col for col in df_stock.columns]
                 df_stock = calculate_indicators(df_stock)
                 
-                # 🟢 【V05.1 安全防護補丁】：先剃除沒有收盤價的空白列，避免盤中或盤前空值報錯
                 df_temp_clean = df_stock.dropna(subset=['Close'])
                 current_close = float(df_temp_clean['Close'].iloc[-1]) if not df_temp_clean.empty else 0.0
                 
@@ -306,25 +278,14 @@ with tab_summary:
                 comp_name = fetch_company_name(raw_name, ticker)
                 
                 for strat in strategies:
-                    # 🟢 V05.2 解構變數
                     radar, ret, win, trades, pf, stars, cur_status, entry_price_val, sl_price, pnl, t_logs, p_buys, p_sells, v_df = run_backtest_engine(df_stock, strat, backtest_days, market_posture)
-                    
                     st.session_state.detail_db[(raw_name, strat)] = {"logs": pd.DataFrame(t_logs), "buys": p_buys, "sells": p_sells, "v_df": v_df}
-                    
                     master_report.append({
-                        "台股代號": raw_name, 
-                        "公司名稱": comp_name, 
-                        "當前股價": f"NT${current_close:.2f}", 
-                        "策略手法": strat,
-                        "倉位狀態": cur_status,
-                        "建議進場價 (或持股成本)": entry_price_val, # 🟢 真實成本/進場點追蹤
-                        "未實現損益": pnl, # 🟢 帳面盈虧
-                        "嚴格防守/停損價": sl_price, # 🟢 浮動停損保護
-                        "總報酬率": f"{ret * 100:+.2f}%", 
-                        "歷史勝率": f"{win * 100:.1f}%",
-                        "交易次數": trades, 
-                        "獲利因子": pf, 
-                        "推薦指數": stars
+                        "台股代號": raw_name, "公司名稱": comp_name, "當前股價": f"NT${current_close:.2f}", 
+                        "策略手法": strat, "倉位狀態": cur_status,
+                        "建議進場價 (或持股成本)": entry_price_val, "未實現損益": pnl,
+                        "嚴格防守/停損價": sl_price, "總報酬率": f"{ret * 100:+.2f}%", 
+                        "歷史勝率": f"{win * 100:.1f}%", "交易次數": trades, "獲利因子": pf, "推薦指數": stars
                     })
             st.session_state.final_df = pd.DataFrame(master_report)
             st.session_state.calculated, st.session_state.last_posture = True, market_posture
@@ -342,6 +303,37 @@ with tab_summary:
 
         styled_df = st.session_state.final_df.style.apply(apply_block_shading, axis=None)
         st.dataframe(styled_df, use_container_width=True, hide_index=True)
+
+# 🟢 🌟 新增：線上新增自選股管理分頁
+with tab_manage:
+    st.header("➕ 線上新增台股至雲端清單")
+    st.markdown("填寫下方欄位按下送出，系統將會**自動寫入你的 Google 試算表**，60 秒內全自動同步！")
+    
+    with st.form("add_stock_form"):
+        new_ticker = st.text_input("🎯 股票代號 (例如: 2330 或 2454)", placeholder="2330").strip().upper()
+        new_name = st.text_input("🏷️ 公司中文名稱 (例如: 台積電)", placeholder="台積電").strip()
+        submit_btn = st.form_submit_button("🚀 一鍵同步新增至雲端試算表")
+        
+        if submit_btn:
+            if not new_ticker:
+                st.warning("⚠️ 請務必輸入股票代號！")
+            elif "XXXXXXXXXXXXXX" in GOOGLE_FORM_ID:
+                st.error("🚨 尚未在程式碼中填入你的 Google 表單 ID！請參考步驟設定。")
+            else:
+                form_url = f"https://docs.google.com/forms/d/e/{GOOGLE_FORM_ID}/formResponse"
+                form_data = {
+                    ENTRY_TICKER_ID: new_ticker,
+                    ENTRY_NAME_ID: new_name
+                }
+                try:
+                    res = requests.post(form_url, data=form_data)
+                    if res.status_code == 200:
+                        st.success(f"🎉 成功寫入！已將 【{new_ticker} {new_name}】 自動新增至雲端試算表！")
+                        st.info("💡 請等待 60 秒快取更新，或至左側選單重新載入，即可在回測矩陣中看到新股票！")
+                    else:
+                        st.error("⚠️ 寫入失敗，請確認表單 ID 與 Entry ID 是否設定正確。")
+                except Exception as e:
+                    st.error(f"❌ 連線發生錯誤: {e}")
 
 with tab_debug:
     st.header("🛠️ 台股歷史 K 線與訊號檢查器")
